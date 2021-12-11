@@ -18,18 +18,26 @@
     6. USB serial communication (stdin, stdout).
 """
 from machine import Pin, PWM, I2C, Timer
-from command import Interpreter                # command processing
-from control import SSR, Motor, Potentiometer  # control elements
-from pico_i2c_lcd import I2cLcd                     # I2C display
+from command import Interpreter                         # command processing
+from control import SSR, Motor, Potentiometer, Elapsed  # control elements
+from pico_i2c_lcd import I2cLcd                         # I2C display
 from utime import sleep_ms
+from tc import TC
+from mcp9800 import MCP9800
 
 
 """
 Configuration area: set up required hardware specifications.
 ============================================================
 """
+splash = "MicroRoast v0.1"
 
 temp_units = "C"  # C for Celsius, F for Fahrenheit.
+
+# Thermocouples: support for 2 or 4.
+tc = {"count":2, "address": 0x068}  # Implements the first two only.
+
+ambient = {"address": 0x4d}
 
 # Motors are digital pwm pins. Set to None if not required.
 motors = [{"PWM":None, "pin":10, "freq":5000, "duty":0},
@@ -37,14 +45,13 @@ motors = [{"PWM":None, "pin":10, "freq":5000, "duty":0},
        ]
 
 # Solid state relays using 1Hz switching
-ssrs = [{"pin": 25,
-                    "constraints":[75, # M1 must be above 75
-                                   50] # M2 must be above 50
+ssrs = [{"pin": 25, "constraints":[75, # M0 must be above 75
+                                   50] # M1 must be above 50
                     }
             ]# Not using the second SSR
 
 # I2C channel setup.
-I2c = [{"SDA":14, "SCL":15}]
+i2c = [{"SDA":14, "SCL":15}]
 
 # I2C display setup. If no display, set values to None
 display = [{"address":0xf8, # check and match display
@@ -58,16 +65,20 @@ pots = [
     {"client": motors[1], "pin":28, "val":0},
     ]
 
-# Thermocouple setup
-tc_address = 0xff      # check and match ADC chip
-tc_count = 2           # number of thermocouples: 0 to 4
-
 
 """
 End of user configuration area
 ==============================
 """
 # Initialize global data structures
+
+# Create I2C channel
+i2c[0] = I2C(1, scl=Pin(i2c[0]["SCL"]), sda=Pin(i2c[0]["SDA"]))
+    
+# Thermocouples
+tc = [TC(i2c, tc["address"], i) for i in range(tc["count"])]
+
+ambient = MCP9800(i2c, ambient["address"])
 
 # Motors are accessible from this dictionary  
 for m in range(len(motors)):
@@ -86,9 +97,6 @@ for s in range(len(ssrs)):
 for p in range(len(pots)):
     pots[p]=Potentiometer(pots[p]["pin"], pots[p]["client"])
 
-# Create I2C channel
-I2c[0] = I2C(1, scl=Pin(I2c[0]["SCL"]), sda=Pin(I2c[0]["SDA"]))
-    
 # Create the display
 """
 display[0] = I2cLcd(I2c[0], display[0]["address"],
@@ -101,9 +109,31 @@ print("Display:", display)
 
 cmnds = Interpreter(1, " ;,:")
 
+# Create elapsed time object
+
+elapsed = Elapsed() # an object that reports seconds since reset
+
 # define readers
 
 # Define commands and callbacks
+
+def cmnd_reset(args):
+    """
+    RESET
+    Snapshot elapsed time
+    Reset motors and SSRs to zero
+    Print splash screen
+    """
+    elapsed.reset()
+    for s in ssrs:
+        s.value(0)
+    for m in motors:
+        m.value(0)
+    updater()
+    
+cmnds.add("RESET", 0, cmnd_reset)
+    
+    
 def cmnd_read(arg, **args):
     """
     READ
@@ -223,15 +253,24 @@ if motors:
         cmnds.add("M" + str(n), 1, cmnd_motors(n, m, ssrs))
         n = n + 1
 
-def update_display(args):
+def updater(args):
     """
-    Print out current status information on the display
+    Update information from motors, SSRs and temperatures.
+    Update the display.
+    Save results for use in future READ command.
     Args is the timer that calls this function
     """
+    current_amb = ambient.read_temperature()
+    current_temps = temps.value()
+    current_ssrs = [s.value() for s in ssrs]
+    current_motors = [m.value() for m in motors]
+    current_elapsed = elapsed.value()
     if display:
         # we have a real one
         print("Sending to display")
+        display.clear()
     else:
+        # get temperatures
         p_values = [int(p.value() - 0.5) for p in pots]
         cmnds.send(p_values)
         s_values = [s.duty() for s in ssrs]     # up to two ssr values
@@ -240,9 +279,9 @@ def update_display(args):
         cmnds.send(m_values)
 
 
-# set a timer to update the display once a second
-display_timer = Timer()
-display_timer.init(mode=Timer.PERIODIC, freq=1, callback=update_display)
+# set a timer to update measurements and the display twice a second
+loop_timer = Timer()
+loop_timer.init(mode=Timer.PERIODIC, period=500, callback=updater)
 
 # Main loop. Processes commands.
 while True:

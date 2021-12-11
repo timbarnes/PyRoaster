@@ -5,7 +5,6 @@ Configure ADC, read ambient, read thermocouples, and calculate temperatures.
 """
 
 from mcp9800 import MCP9800
-from bisect import bisect
 
 
 class OutOfRangeError(Exception):
@@ -17,7 +16,7 @@ class TC(object):
     Thermocouple interface using MCP3428
     """
     
-    _temps = [0, 0, 0, 0]
+    _temps = [None, None, None, None]
     _count = 0  # initially no thermocouples
     _i2c = None
     _address = None
@@ -44,19 +43,16 @@ class TC(object):
     #~ MILLIVOLTS_SET = set(MILLIVOLTS)
 
     
-    def __init__(self, count, i2c, address, types):
+    def __init__(self, i2c, address, channel):
         """
-        Create count thermocouples and set up I2C communication.
+        Create a thermocouple and set up I2C communication.
         count:   number to be set up (1 to 4)
         i2c:     I2C object for communications
         address: address of the MCP3428 chip
-        types:   thermocouple types (list)
         """
-        assert count >= 1 and count <= 4, "TC: count must be between 1 and 4"
-        self._count = count
         self._address = address
+        self._channel = channel
         self._itc = i2c
-        self._types = types   # first implementation assumes type "K"
         # Connect to the ADC and enable it with 9 bit accuracy
     
     def read(self):
@@ -70,7 +66,7 @@ class TC(object):
         """
         pass
     
-        def bisect(a, x, lo=0, hi=None):
+    def bisect(a, x, lo=0, hi=None):
         """
         Return the index where to insert item x in list a, assuming a is sorted.
         The return value i is such that all e in a[:i] have e <= x, and all e in
@@ -90,7 +86,7 @@ class TC(object):
         return lo
 
     
-       def C_to_mV(C):
+    def C_to_mV(C):
         """
         convert degrees C to millivolts
         """

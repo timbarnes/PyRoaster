@@ -7,6 +7,8 @@
 """
 
 from machine import Pin, Timer, PWM, ADC
+from time import ticks_ms, ticks_diff
+from MCP342x import MCP342x
 
 
 class SSR(object):
@@ -210,4 +212,24 @@ class Potentiometer(object):
             self._lastVal = self._value
             self._value = new
         return self._value
+    
+
+class Elapsed(object):
+    """
+    Keeps track of time since the last RESET or from the start of execution.
+    """
+    start = ticks_ms()
+    
+    def reset(self):
+        """
+        Reset time stamp to begin a new count.
+        """
+        self.start = ticks_ms()
+    
+    def now(self):
+        """
+        Time in seconds since timer start or reset.
+        """
+        return (ticks_diff(ticks_ms(), self.start)) / 1000
+
     
