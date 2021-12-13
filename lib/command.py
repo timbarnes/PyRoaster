@@ -59,6 +59,7 @@ class Interpreter(object):
                     if len(clist) == self._commands[keyword][0] + 1:
                         callback = self._commands[keyword][1]
                         args = clist[1:]
+                        print("Command:", callback, args)
                         callback(args)            # execute the command
                 else:  # it's not recognized; reset and exit silently
                     return

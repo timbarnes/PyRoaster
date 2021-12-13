@@ -7,7 +7,7 @@
 """
 
 from machine import Pin, Timer, PWM, ADC
-from time import ticks_ms, ticks_diff
+from time import ticks_ms, ticks_diff, sleep_ms
 from MCP342x import MCP342x
 
 
@@ -32,13 +32,14 @@ class SSR(object):
     _offTimer = None
     _deltaTimer = None
     _duty = 0  # current duty value is available to callers
+    lock = False # indicates a critical section (timing)
        
     def __init__(self, pin, constraints=None):
         """
         Create an instance of an SSR controller using the specified pin.
         Constraints is a list of motors and values below which the SSR will be disabled.
         A value of zero is ignored and means the motor does not implement a constraint.
-        This is to ensure that a heater doesn't run without air, for example.
+        Constraints are there to ensure that a heater doesn't run without air, for example.
         """
         self.pin = Pin(pin, Pin.OUT)
         self._pinNum = pin
@@ -50,7 +51,10 @@ class SSR(object):
         self.constrained = True  # check constraints first time through
         
     def __str__(self):
-        return "SSR pin:"+str(self.pin) + "duty:" + str(self._duty)
+        return f"SSR pin:{self._pinNum} duty: {self._duty}"
+            
+    def __repr__(self):
+        return f"SSR(pin={self._pinNum}})"
             
     def off(self):
         self.pin.off(0)
@@ -92,11 +96,19 @@ class SSR(object):
                 print("duty: constrained")
                 return self._duty
             # set timers for the requested duty cycle.
+            self.lock = True  # critical section: no display updates
+            print("Setting updateLock")
             self.constrained = False
-            ms = duty * 10  # the number of milliseconds of on time in a one second cycle
-            self._deltaTimer.init(mode=Timer.ONE_SHOT, period=ms, callback=setOffTimer)
             self.pin.on()  # on time comes first
-            self._onTimer.init(mode=Timer.PERIODIC, freq=1, callback=ssrOn)  
+            self._onTimer.init(mode=Timer.PERIODIC, freq=1, callback=ssrOn)
+            ms = duty * 10  # the number of milliseconds of on time in a one second cycle
+            sleep_ms(ms)  # this time needs to be exact
+            self.pin.off()
+            self._offTimer.init(mode=Timer.PERIODIC, freq=1, callback=ssrOff)
+            #self._deltaTimer.init(mode=Timer.ONE_SHOT, period=ms, callback=setOffTimer)
+            print("Resetting updateLock")
+            self.lock = False
+        print('Duty', self._duty)
         return self._duty
 
     def constrain(self):
@@ -118,13 +130,19 @@ class SSR(object):
             self.constrained = False
             self.duty(self._duty)
             return self.constrained
+        
+    def value(self):
+        if self.constrained:
+            return 0
+        return self._duty
+        
 
 class Motor(object):
     """
     A PWM pin used to drive a fan or other DC motor.
     Duty ranges from 0 to provided value <= 65535. Default is 100
     """
-    pin = None
+    _pinNum = None
     _pwm = None
     _freq = 1000
     _duty = 0
@@ -137,7 +155,7 @@ class Motor(object):
         Minimum is always zero.
         """
         # set up class variables
-        self.pin = pin
+        self._pinNum = pin
         self._duty = duty
         self._freq = freq
         self.maxDuty = maxDuty
@@ -146,6 +164,12 @@ class Motor(object):
         self._pwm.freq(int(freq*65535.0/maxDuty))
         self._pwm.duty_u16(duty)
         
+    def __str__(self):
+        return "Motor: pin:"+str(self._pinNum) + "duty:" + str(self._duty)
+    
+    def __repr__(self):
+        return f"Motor(pin={self._pinNum},freq={self._freq},duty={self._duty},maxDuty={self.maxDuty})"
+            
     def deinit(self):
         """
         Turn off PWM on the pin
@@ -165,6 +189,9 @@ class Motor(object):
             self._duty = duty
             self._pwm.duty_u16(duty)
             return duty
+        
+    def value(self):
+        return self._duty
 
     def freq(self, freq=None):
         """
@@ -226,10 +253,12 @@ class Elapsed(object):
         """
         self.start = ticks_ms()
     
-    def now(self):
+    def value(self):
         """
         Time in seconds since timer start or reset.
         """
         return (ticks_diff(ticks_ms(), self.start)) / 1000
+    
+
 
     

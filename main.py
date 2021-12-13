@@ -18,26 +18,28 @@
     6. USB serial communication (stdin, stdout).
 """
 from machine import Pin, PWM, I2C, Timer
+from sys import exit
 from command import Interpreter                         # command processing
 from control import SSR, Motor, Potentiometer, Elapsed  # control elements
 from pico_i2c_lcd import I2cLcd                         # I2C display
 from utime import sleep_ms
 from tc import TC
-from mcp9800 import MCP9800
+from lm75a import LM75A
+from time import ticks_ms, ticks_diff
 
 
 """
 Configuration area: set up required hardware specifications.
 ============================================================
 """
-splash = "MicroRoast v0.1"
+splash = "  MicroRoast v0.1   "
 
 temp_units = "C"  # C for Celsius, F for Fahrenheit.
 
 # Thermocouples: support for 2 or 4.
-tc = {"count":2, "address": 0x068}  # Implements the first two only.
+tc = {"count":2, "address": 0x68}  # Implements the first two only.
 
-ambient = {"address": 0x4d}
+ambient = {"address": 0x48}
 
 # Motors are digital pwm pins. Set to None if not required.
 motors = [{"PWM":None, "pin":10, "freq":5000, "duty":0},
@@ -54,7 +56,7 @@ ssrs = [{"pin": 25, "constraints":[75, # M0 must be above 75
 i2c = [{"SDA":14, "SCL":15}]
 
 # I2C display setup. If no display, set values to None
-display = [{"address":0xf8, # check and match display
+display = [{"address":0x27, # PCF8574
             "rows":4, "cols":20}
         ]
 
@@ -73,12 +75,13 @@ End of user configuration area
 # Initialize global data structures
 
 # Create I2C channel
-i2c[0] = I2C(1, scl=Pin(i2c[0]["SCL"]), sda=Pin(i2c[0]["SDA"]))
+i2c = I2C(1, scl=Pin(i2c[0]["SCL"]), sda=Pin(i2c[0]["SDA"]))
+print("I2C:", i2c)
     
 # Thermocouples
 tc = [TC(i2c, tc["address"], i) for i in range(tc["count"])]
 
-ambient = MCP9800(i2c, ambient["address"])
+ambient = LM75A(i2c, ambient["address"])
 
 # Motors are accessible from this dictionary  
 for m in range(len(motors)):
@@ -97,13 +100,16 @@ for s in range(len(ssrs)):
 for p in range(len(pots)):
     pots[p]=Potentiometer(pots[p]["pin"], pots[p]["client"])
 
-# Create the display
-"""
-display[0] = I2cLcd(I2c[0], display[0]["address"],
-                    display[0]["rows"], display[0]["cols"])
-"""
-display = None
-print("Display:", display)
+# Create the display and print the splash screen
+
+display = I2cLcd(i2c, display[0]["address"],
+                 display[0]["rows"], display[0]["cols"])
+
+display.clear()
+display.move_to(0, 1)
+display.putstr(splash)
+sleep_ms(1000)
+
 
 # set up the interpreter
 
@@ -116,6 +122,27 @@ elapsed = Elapsed() # an object that reports seconds since reset
 # define readers
 
 # Define commands and callbacks
+
+def cmnd_shutdown(args):
+    """
+    SHUTDOWN
+    Exit the application.
+    Power cycling or Run from IDE is required to restart
+    """
+    loop_timer.deinit()
+    display.clear()
+    display.move_to(4, 1)
+    display.putstr("Shutting down")
+    for s in ssrs:
+        s.duty(0)
+    for m in motors:
+        m.duty(0)
+    sleep_ms(1000)
+    display.move_to(5, 2)
+    display.putstr("...done...")
+    exit()
+    
+cmnds.add("SHUTDOWN", 0, cmnd_shutdown)
 
 def cmnd_reset(args):
     """
@@ -130,6 +157,7 @@ def cmnd_reset(args):
     for m in motors:
         m.value(0)
     updater()
+
     
 cmnds.add("RESET", 0, cmnd_reset)
     
@@ -143,7 +171,7 @@ def cmnd_read(arg, **args):
     cmnds.send(p_values)
     s_values = [s.duty() for s in ssrs]     # up to two ssr values
     cmnds.send(s_values)
-    m_values = [m.duty() for m in motors]   # up to two motor values
+    m_values = [m.value() for m in motors]   # up to two motor values
     cmnds.send(m_values)
     # Artisan wants 2 or 4 thermocouple values
     # and four other values, but it ignores the last value
@@ -260,33 +288,69 @@ def updater(args):
     Save results for use in future READ command.
     Args is the timer that calls this function
     """
-    current_amb = ambient.read_temperature()
-    current_temps = temps.value()
-    current_ssrs = [s.value() for s in ssrs]
-    current_motors = [m.value() for m in motors]
-    current_elapsed = elapsed.value()
+    for s in ssrs:
+        if s.lock:         # don't update the display: time-critical code running
+            print("Updater locked out")
+            return
+    amb_val = ambient.read_temperature()
+#    current_temps = temps.value()
+    temp_vals = [195.55, 187.5434]
+    ssr0_val = ssrs[0].value()
+    ssr0_duty = ssrs[0].duty()
+    ssr0_constrained = ssrs[0].constrained
+    m0_val = motors[0].value()
+    m1_val = motors[1].value()
+    elapsed_val = elapsed.value()
     if display:
+        def show_at(x, y, msg):
+            """
+            print a message to the display at coords x and y
+            """
+            display.move_to(x, y)
+            display.putstr(msg)
+        
         # we have a real one
-        print("Sending to display")
-        display.clear()
-    else:
-        # get temperatures
-        p_values = [int(p.value() - 0.5) for p in pots]
-        cmnds.send(p_values)
-        s_values = [s.duty() for s in ssrs]     # up to two ssr values
-        cmnds.send(s_values)
-        m_values = [m.duty() for m in motors]   # up to two motor values
-        cmnds.send(m_values)
+        # elapsed time
+        min = int(elapsed_val / 60)
+        show_at(0, 0, f'{int(elapsed_val / 60):2}:')
+        if min < 10:
+            show_at(0, 0, '0')
+        show_at(2, 0, ':')
+        show_at(3, 0, f'{int(elapsed_val % 60):2}')
+        # ambient temperature
+        show_at(6, 0, f'AT: {int(amb_val)}')
+        # ET and BT
+        show_at(13, 0, f'ET: {int(temp_vals[0]):3}')
+        show_at(13, 1, f'BT: {int(temp_vals[1]):3}')
+        # Heater
+        show_at(0, 2, f'HTR:  {ssr0_val:3}%')
+        if ssr0_duty == 0: # heat is set to off
+            if ssr0_constrained:
+                show_at(11, 2, '         ')
+            else:
+                show_at(11, 2, 'READY    ')
+        else: # heat is non-zero
+            if ssr0_constrained:
+               show_at(11, 2,  'CONSTRAIN ')
+            else:
+                show_at(11, 2, '*HEATING*')
+        show_at(0, 3, f'FAN:  {m0_val:3}%')
+        show_at(11, 3, f'ROT: {m1_val:3}%')
 
 
-# set a timer to update measurements and the display twice a second
-loop_timer = Timer()
-loop_timer.init(mode=Timer.PERIODIC, period=500, callback=updater)
+# set a timer to update measurements and the display regularly
+display.clear()
+#loop_timer = Timer()
+#loop_timer.init(mode=Timer.PERIODIC, period=2000, callback=updater)
 
 # Main loop. Processes commands.
 while True:
-    cmnds.do()                # process the input stream
-    sleep_ms(200)             # take a nap. Not sure how long this could be...
+    ts = ticks_ms()
+    cmnds.do()                    # process the input stream
+    updater(None)
+    tc = ticks_diff(ticks_ms(), ts)
+    sleep_ms(1000-tc)             # take a nap for the rest of a second.
+
 
 
     
