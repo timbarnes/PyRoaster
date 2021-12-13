@@ -32,7 +32,7 @@ from time import ticks_ms, ticks_diff
 Configuration area: set up required hardware specifications.
 ============================================================
 """
-splash = "  MicroRoast v0.1   "
+splash = "   MicroRoast v0.1   "
 
 temp_units = "C"  # C for Celsius, F for Fahrenheit.
 
@@ -61,10 +61,11 @@ display = [{"address":0x27, # PCF8574
         ]
 
 # Potentiometer setup. Client is the object the pot controls
+# Specify client type and index
 pots = [
-    {"client": ssrs[0],   "pin":26, "val":0},
-    {"client": motors[0], "pin":27, "val":0},
-    {"client": motors[1], "pin":28, "val":0},
+    {"client": ("SSR", 0),   "pin":26, "val":0},
+    {"client": ("MOTOR", 0), "pin":27, "val":0},
+    {"client": ("MOTOR", 1), "pin":28, "val":0},
     ]
 
 
@@ -76,7 +77,6 @@ End of user configuration area
 
 # Create I2C channel
 i2c = I2C(1, scl=Pin(i2c[0]["SCL"]), sda=Pin(i2c[0]["SDA"]))
-print("I2C:", i2c)
     
 # Thermocouples
 tc = [TC(i2c, tc["address"], i) for i in range(tc["count"])]
@@ -86,19 +86,24 @@ ambient = LM75A(i2c, ambient["address"])
 # Motors are accessible from this dictionary  
 for m in range(len(motors)):
     motors[m] = Motor(motors[m]["pin"], motors[m]["freq"], motors[m]["duty"])
-print(motors)
+
 # SSRs are accessible from this dictionary
 # populate ssrs with motors / constraint tuples
 for s in range(len(ssrs)):
     ssrs[s]["constraints"] = list(zip(motors, ssrs[s]["constraints"]))
-    print(ssrs[s])
+
 # now create the SSRs themselves
 for s in range(len(ssrs)):
     ssrs[s] = SSR(ssrs[s]["pin"], ssrs[s]["constraints"])
 
 # Pots are accessible from this dictionary. 
 for p in range(len(pots)):
-    pots[p]=Potentiometer(pots[p]["pin"], pots[p]["client"])
+    client = pots[p]["client"]
+    if client[0] == "SSR":
+        client = ssrs[client[1]]
+    elif client[0] == "MOTOR":
+        client = motors[client[1]]
+    pots[p]=Potentiometer(pots[p]["pin"], client)
 
 # Create the display and print the splash screen
 
@@ -129,7 +134,6 @@ def cmnd_shutdown(args):
     Exit the application.
     Power cycling or Run from IDE is required to restart
     """
-    loop_timer.deinit()
     display.clear()
     display.move_to(4, 1)
     display.putstr("Shutting down")
@@ -140,6 +144,9 @@ def cmnd_shutdown(args):
     sleep_ms(1000)
     display.move_to(5, 2)
     display.putstr("...done...")
+    display.move_to(0, 3)
+    display.putstr(splash)
+    display.backlight_off()
     exit()
     
 cmnds.add("SHUTDOWN", 0, cmnd_shutdown)
@@ -221,7 +228,6 @@ def cmnd_units(args):
         temp_units = "F"
     if args[0][0] == "C":
         temp_units = "C"
-    print(temp_units)
         
 cmnds.add("UNITS", 1, cmnd_units)
 
@@ -246,7 +252,6 @@ if ssrs:
 
     n = 0
     for s in ssrs:
-        print(n, s)
         cmnds.add("SSR"+str(n), 1, cmnd_ssrs(n, s))
         n = n + 1
 
@@ -277,21 +282,28 @@ if motors:
 
     n = 0
     for m in motors:
-        print(m, n)
         cmnds.add("M" + str(n), 1, cmnd_motors(n, m, ssrs))
         n = n + 1
 
-def updater(args):
+def eval_pots():
+    """
+    Check the potentiometers
+    If their values have changed, update their clients
+    """
+    for p in pots:
+        if p.client:
+            p_old, p_new = p.value()
+            if p_old:                # there's been a change
+                p.client.duty(p_new) # so update the client
+    for s in ssrs:
+        s.constrain()
+
+def update_display():
     """
     Update information from motors, SSRs and temperatures.
     Update the display.
     Save results for use in future READ command.
-    Args is the timer that calls this function
     """
-    for s in ssrs:
-        if s.lock:         # don't update the display: time-critical code running
-            print("Updater locked out")
-            return
     amb_val = ambient.read_temperature()
 #    current_temps = temps.value()
     temp_vals = [195.55, 187.5434]
@@ -338,16 +350,15 @@ def updater(args):
         show_at(11, 3, f'ROT: {m1_val:3}%')
 
 
-# set a timer to update measurements and the display regularly
 display.clear()
-#loop_timer = Timer()
-#loop_timer.init(mode=Timer.PERIODIC, period=2000, callback=updater)
+
 
 # Main loop. Processes commands.
 while True:
     ts = ticks_ms()
     cmnds.do()                    # process the input stream
-    updater(None)
+    eval_pots()                   # check to see if any pots have moved, and update their clients
+    update_display()          # update the display
     tc = ticks_diff(ticks_ms(), ts)
     sleep_ms(1000-tc)             # take a nap for the rest of a second.
 

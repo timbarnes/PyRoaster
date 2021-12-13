@@ -32,7 +32,6 @@ class SSR(object):
     _offTimer = None
     _deltaTimer = None
     _duty = 0  # current duty value is available to callers
-    lock = False # indicates a critical section (timing)
        
     def __init__(self, pin, constraints=None):
         """
@@ -93,11 +92,8 @@ class SSR(object):
             self._duty = duty
             # check constraints and douse the SSR if motors are too low
             if self.constrained:
-                print("duty: constrained")
                 return self._duty
             # set timers for the requested duty cycle.
-            self.lock = True  # critical section: no display updates
-            print("Setting updateLock")
             self.constrained = False
             self.pin.on()  # on time comes first
             self._onTimer.init(mode=Timer.PERIODIC, freq=1, callback=ssrOn)
@@ -105,10 +101,6 @@ class SSR(object):
             sleep_ms(ms)  # this time needs to be exact
             self.pin.off()
             self._offTimer.init(mode=Timer.PERIODIC, freq=1, callback=ssrOff)
-            #self._deltaTimer.init(mode=Timer.ONE_SHOT, period=ms, callback=setOffTimer)
-            print("Resetting updateLock")
-            self.lock = False
-        print('Duty', self._duty)
         return self._duty
 
     def constrain(self):
@@ -215,10 +207,12 @@ class Potentiometer(object):
     _adc = None
     _lastVal = 0
     _value = 0
+    client = None
     pin = None
     id = None
+    delta = 3    # minimum significant change
     
-    def __init__(self, pin, client = None):
+    def __init__(self, pin, client = None, delta=3):
         """
         Initialize a potentiometer interface.
         Pin is the analog input pin for the pot.
@@ -226,19 +220,28 @@ class Potentiometer(object):
         """
         self.pin = pin
         self._adc = ADC(pin)
-        self._value = self._adc.read_u16() * 100. / 65535
+        self._value = int(self._adc.read_u16() * 100. / 65535)
+        self._lastVal = self._value
         self.client = client
 
+    def __str__(self):
+        return f"Pot: {self.pin},{self.client}"
+    
+    def __repr__(self):
+        return f"Potentiometer({self.pin}, {self.client})"
+    
     def value(self):
         """
         Read the potentiometer and return the current value
         after saving the previous value
         """
-        new = self._adc.read_u16() * 100. / 65535
-        if new != self._value:
+        new = int(self._adc.read_u16() * 100. / 65535)
+        if abs(new - self._value) >= self.delta:
             self._lastVal = self._value
             self._value = new
-        return self._value
+            return self._lastVal, self._value
+        else:
+            return False, self._value     # no change
     
 
 class Elapsed(object):
